@@ -1,6 +1,7 @@
 import gc
 from time import sleep
 from typing import List, Tuple, Union, Dict
+from src.models.model_factory import construct_model_base
 from transformer_lens import HookedTransformer
 import torch
 import plotly.graph_objects as go
@@ -9,7 +10,34 @@ from jaxtyping import Float
 import pandas as pd
 
 
-# TODO this module should be connected to Interpreter objects
+def load_model(model_name):
+    """Loads model with TransformerLens, and returns the model and its base."""
+    # load the model:
+    model_base = construct_model_base(model_name)
+
+    # load the TL variant:
+    tl_model = HookedTransformer.from_pretrained_no_processing(
+        model_name,
+        hf_model=model_base.model,
+        device=model_base.device,
+        # dtype=torch.float32 if 'llama' not in model_name else torch.bfloat16,  # TODO remove hack
+        dtype=torch.float32,
+        # fold_ln=True,
+    )
+    tl_model.cfg.use_attn_in = True
+    tl_model.cfg.use_attn_result = True  # for `attn.result`
+    tl_model.cfg.ungroup_grouped_query_attention = True
+    tl_model.cfg.use_hook_mlp_in = True
+
+    # HACK to support kv-cahce (due to bug in transformer_lens, when ungrouping attn heads)
+    tl_model.cfg.n_key_value_heads = tl_model.cfg.n_heads  
+
+    model_base.tl_model = tl_model
+    model_base.model = None
+    torch.set_grad_enabled(False)  # as our interp work does not require gradients
+
+    return tl_model, model_base
+
 
 def to_toks(
     message: str,
@@ -317,61 +345,6 @@ def get_adv_hijack_score(
     hijacking_score = hijacking_score.sum()
     return hijacking_score
 
-
-
-def my_attention_reformulations(
-        model: HookedTransformer,
-        pre_attn: Float[torch.Tensor, "n_layers n_head seq_len d_model"],
-        attn_scores: Float[torch.Tensor, "n_layers n_head seq_len seq_len"],
-        ablation_variant: str = '',  # 'normalize_X', 'WVO_X_only'
-        calc_batch_size: int = 5,
-) -> Tuple[Float[torch.Tensor, "n_layers n_head seq_len d_model"], Float[torch.Tensor, "n_layers n_head seq_len seq_len d_model"]]:
-    W_OV = model.W_V.float().cuda() @ model.W_O.float().cuda()
-    W_OV = W_OV.cpu().float()  
-    W_OV.shape # n_layers, n_heads, d_model, d_model
-
-    X = pre_attn.transpose(1,2).float().cpu()
-    X.shape   # n_layers, n_head, seq_len, d_model
-
-    if 'normalize_X' in ablation_variant:
-        # to neurtralize the norm effect (just for eval)
-        X = X / torch.norm(X, dim=-1, keepdim=True)
-
-    C = (X.cuda() @ W_OV.cuda()).cpu()
-    C.shape  # n_layers, n_heads, seq_len, d_model
-    ## interpretation: C[layer, head]: the vectors offered by to this attention head -- it is up to the pattern which to take and how much.
-    ## can calculate attention-out: `hook_pattern[layer, head, pos] @ C[layer, head]`
-    
-    ## clean unused GPU mem
-    del W_OV, X
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    if 'WVO_X_only' in ablation_variant:
-        # to allow only attention-out effect
-        attn_scores = torch.ones_like(attn_scores)
-
-    ## [Option 1 - no batching]
-    # Y = (attn_scores.float().cuda().unsqueeze(-1) * C.cuda().unsqueeze(-3)).cpu()
-    # Y.shape  # n_layers, n_heads, seq_len[dst], seq_len[src], d_model
-
-    ## [Option 2 - batching]
-    Y = []
-    C_tag = []  # we make C the same structure as Y
-
-    for batch_layers in range(0, pre_attn.shape[0], calc_batch_size):
-        batch_layers = slice(batch_layers, min(batch_layers + calc_batch_size, pre_attn.shape[0]))
-        Y.append((attn_scores[batch_layers].float().cuda().unsqueeze(-1) * C[batch_layers].cuda().unsqueeze(-3)).cpu())
-        C_tag.append((torch.ones_like(attn_scores)[batch_layers].float().cuda().unsqueeze(-1) * C[batch_layers].cuda().unsqueeze(-3)).cpu())
-        gc.collect()
-        torch.cuda.empty_cache()
-    Y = torch.cat(Y, dim=0)
-    C_tag = torch.cat(C_tag, dim=0)
-
-    ## interpretation of Y: decomposing attention-out to the contribution of each preceeding token repr.
-    ## can calculate attention-out: `Y[layer, head, pos].sum(dim=-1)`
-
-    return C, C_tag, Y
 
 
 def heatmap_with_direction(
@@ -772,42 +745,3 @@ def get_top_attn_scores(
 
     # TODO make a list
     return top_heads, scores  # List, torch.Tensor["layer, head"]
-
-
-def get_top_token_in_dir(model, direction: torch.tensor, topk = 10):
-
-    # [OPTION I]
-    # _dir = _dir.float().cpu()
-    # proj_matrix = model_base.vocab_proj.T  #model.lm_head.weight.T
-    # proj_matrix = proj_matrix.float().cpu()
-    # dir_vocab = _dir @ proj_matrix
-    # dir_vocab = torch.nn.functional.softmax(dir_vocab, dim=-1)
-
-    # [OPTION II]
-    # direction = direction.to(model.device, model.dtype)
-    direction = direction.cuda()
-    direction = model.ln_final(direction)
-    logits = model.unembed(direction)
-    logits = logits.softmax(dim=-1)
-    
-    scores, indices = torch.topk(torch.tensor(logits), topk)
-    tokens = model.tokenizer.convert_ids_to_tokens(indices)
-    # print(tokens)
-    # extract the most similar token vectors
-    # vectors = proj_matrix[:, indices.cpu()]
-
-    print(tokens)
-    import matplotlib.pyplot as plt
-    plt.barh(tokens, scores.float().cpu().numpy())
-    plt.yticks(rotation=0)
-
-    plt.title(f"Top (similar) tokens in the direction")
-    plt.show()
-
-    return tokens, scores
-
-
-def rank_token_through_layers():
-    # [TODO] track rank in of a given token in logit lens, through the layers; 
-    #        visualize the rank (x-axis) as function of the layer (y-axis)
-    raise NotImplementedError()
