@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 from jaxtyping import Float, Bool
-from src.interp.mini_tools import to_toks
+from src.interp.utils import to_toks
 
 def load_data(
     model_name="google/gemma-2-2b-it",
@@ -168,39 +168,6 @@ def enrich_with_affirm_length(df, model_base, set_mock_affirm_prefix=False, pad_
         df['affirm_tok_len'] = df.affirm_str.apply(lambda x: model_base.to_toks(x, add_template=False).shape[1])
 
     return df
-
-
-def get_idx_slices(
-        model_base, adv_message, response_str, 
-        adv_suffix_len=20,  # we mostly use GCG with 20 tokens
-    ):
-    # wraps `get_idx_slices`, but also calculates the affirm length before
-    _affirm_slice_data = enrich_with_affirm_length(pd.DataFrame([{'response': response_str}]), model_base)
-    affirm_str, affirm_tok_len = _affirm_slice_data.affirm_str.item(), _affirm_slice_data.affirm_tok_len.item()
-    
-    # given a model-input string (message + 20-tokens-adv-suffix, under chat template) returns the slices for the different parts (message, adv, chat, affirm, bad)
-    # input_len = model_base.to_toks(adv_message).shape[1]   # DISABLED: NOTE! HF's tokenizer for Gemma _slightly_ differs from TL's one (from some reason).
-    input_len = to_toks(adv_message, model_base.tl_model)[0].shape[1]
-    chat_pre_len = model_base.before_instr_tok_count
-    chat_suffix_len = model_base.after_instr_tok_count
-    affrim_prefix_len = affrim_prefix_len or 20  # 20 mostly fits, when there is an actual `sure, etc.`
-    slcs = dict(
-        slc_bos=slice(0, 1),  # <BOS>
-        slc_chat_pre=slice(1, chat_pre_len),
-        slc_instr=slice(chat_pre_len, input_len-adv_suffix_len-chat_suffix_len), 
-        slc_adv=slice(input_len-adv_suffix_len-chat_suffix_len, input_len-chat_suffix_len), 
-        slc_chat=slice(input_len-chat_suffix_len, input_len), 
-        slc_affirm=slice(input_len, input_len+affrim_prefix_len), 
-        slc_bad=slice(input_len+affrim_prefix_len, None),
-
-        # additional slices:
-        slc_chat3_affirm3=slice(input_len - 3, input_len + 3),
-        slc_chat_s2=slice(input_len - 2, input_len),
-        slc_input=slice(chat_pre_len, input_len - chat_suffix_len)
-        )
-    slcs['slc_chat[-1]'] = slice(slcs['slc_chat'].stop - 1, slcs['slc_chat'].stop)  # for the last token in chat slice
-    
-    return slcs
 
 
 def get_logits_stats(logits: Float[torch.Tensor, "vocab_size"], model_base):
