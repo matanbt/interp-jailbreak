@@ -5,9 +5,8 @@ import functools
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import List
 from torch import Tensor
-from jaxtyping import Int, Float
 
-from src.refusal_direction.pipeline.model_utils.model_base import ModelBase
+from src.models.model_base import ModelBase
 
 
 def format_instruction_llama3_chat(

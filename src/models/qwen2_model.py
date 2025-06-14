@@ -7,7 +7,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import List
 from torch import Tensor
 
-from src.refusal_direction.pipeline.model_utils.model_base import ModelBase
+from src.models.model_base import ModelBase
 
 
 QWEN_REFUSAL_TOKS = [40, 2121] # ['I', 'As']

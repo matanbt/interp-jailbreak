@@ -1,10 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import List
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig, PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer
 from tqdm import tqdm
 from torch import Tensor
 import torch
-import os
 
 
 class ModelBase(ABC):

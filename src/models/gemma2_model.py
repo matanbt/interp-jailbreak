@@ -6,7 +6,7 @@ from torch import Tensor
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import List
 
-from src.refusal_direction.pipeline.model_utils.model_base import ModelBase
+from src.models.model_base import ModelBase
 
 # Gemma chat template is based on
 # - Official Gemma documentation: https://ai.google.dev/gemma/docs/formatting
