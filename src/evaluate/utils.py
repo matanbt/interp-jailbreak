@@ -1,13 +1,11 @@
 
 import random
-from huggingface_hub import hf_hub_download
 import pandas as pd
 from typing import List
 import pandas as pd
 import torch
 from tqdm import tqdm
 from jaxtyping import Float, Bool
-from src.interp.utils import to_toks
 
 def load_data(
     model_name="google/gemma-2-2b-it",
@@ -17,27 +15,22 @@ def load_data(
     msg_slices=None,
     suffix_optimizers=['gcg'],
     suffix_objectives=['affirm'],
-    suffix_cats=None # ['reg', 'init'],
+    suffix_cats=None, # ['reg', 'init'],
+    return_df_only=True,
 ):
     ## load data:
     # TODO load from HF:
 
-    ## Load offline:
-    # if model_name == "google/gemma-2-2b-it":
-    #     file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__gemma_gcg_affirm__raw_df.bz2"
-    # elif model_name == "qwen/qwen2.5-1.5b-instruct":
-    #     file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__qwen2.5-1.5b-instruct_gcg_affirm.bz2"
-    # elif model_name == "meta-llama/llama-3.1-8b-instruct":
-    #     file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__llama3.1_gcg_affirm.bz2"
-    # else:
-    #     raise ValueError(f"Model {model_name} not supported.")
-    # df = pd.read_pickle(file_path, compression='bz2')
+    if model_name == "google/gemma-2-2b-it":
+        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__gemma_gcg_affirm__raw_df.bz2"
+    elif model_name == "qwen/qwen2.5-1.5b-instruct":
+        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__qwen2.5-1.5b-instruct_gcg_affirm.bz2"
+    elif model_name == "meta-llama/llama-3.1-8b-instruct":
+        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__llama3.1_gcg_affirm.bz2"
+    else:
+        raise ValueError(f"Model {model_name} not supported.")
 
-    ## Load from HF:
-    df = pd.read_parquet(
-        hf_hub_download(repo_id='MatanBT/gcg-evaluated-data', repo_type="dataset",
-                        filename=f"{model_name.split('/')[-1]}_eval_data.parquet")
-)
+    df = pd.read_pickle(file_path, compression='bz2')
 
     # filter to non-mult messages:
     df = df[~df.is_mult_attack]
@@ -85,6 +78,8 @@ def load_data(
         chosen_message_ids = chosen_message_ids[msg_slices]
         df = df[df.message_id.isin(chosen_message_ids)]
 
+    if return_df_only:
+        return df
     return df, top_suffix_ids, suffix_ids_to_avg, targets, hard_message_ids
 
 

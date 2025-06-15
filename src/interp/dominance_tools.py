@@ -1,7 +1,7 @@
 import gc
 from time import sleep
 from typing import List, Tuple, Union, Dict
-from interp.utils import to_toks
+from src.interp.utils import to_toks
 from src.models.model_factory import construct_model_base
 from transformer_lens import HookedTransformer
 import torch
@@ -21,7 +21,9 @@ def get_model_hidden_states(
     force_output_prefix=None,
     Y_ablation_variant: str = '',
     calc_batch_size: int = 2,
-    given_dir: Float[torch.Tensor, "n_layer, d_model"] = None,  # TODO: support this
+    given_dir: Float[torch.Tensor, "n_layer d_model"] = None,  # TODO: support this
+
+    apply_sanity_checks: bool = False,
 ):
     """
     Returns selected hidden states, and TL's cache object.
@@ -155,20 +157,23 @@ def get_model_hidden_states(
         out_cache['Y'] = _calc_Y
         out_labels['Y'] = [f"Y l{layer}-h{head}" for layer in range(n_layers) for head in range(model.cfg.n_heads)]
 
-        print(
-            "decomp vs Y:", (out_cache['decompose_resid__attns'][5] - out_cache['Y_all_norm_T'][5].sum(dim=(0,1))).abs().max(), "\n"
-            "decomp (w/ y) vs resid:", ((out_cache['decompose_resid__embed'] + out_cache['decompose_resid__mlps'].sum(dim=0) + out_cache['Y_all_norm_T'].sum(dim=(0,1,2))) - out_cache['resid'][-1]).abs().max()
-        )
+        if apply_sanity_checks:
+            print(
+                "decomp vs Y:", (out_cache['decompose_resid__attns'][5] - out_cache['Y_all_norm_T'][5].sum(dim=(0,1))).abs().max(), "\n"
+                "decomp (w/ y) vs resid:", ((out_cache['decompose_resid__embed'] + out_cache['decompose_resid__mlps'].sum(dim=0) + out_cache['Y_all_norm_T'].sum(dim=(0,1,2))) - out_cache['resid'][-1]).abs().max()
+            )
 
     # legacy names:
     out_cache['resids_pre_attn'] = out_cache['X_in']
     out_cache['Y_all_norm'] = out_cache['Y']
     out_cache['C_all_norm'] = out_cache['X_WVO'].unsqueeze(2).repeat(1, 1, out_cache['X_WVO'].shape[2], 1, 1)  # repeat dst_pos --> layer, head, src_pos, dst_pos, d_model
     out_labels['Y_all_norm'] = [f"Y_all_norm l{layer}-h{head}" for layer in range(n_layers) for head in range(model.cfg.n_heads)]
-    print(
-        "decomp vs Y:", (out_cache['decompose_resid__attns'][5] - out_cache['Y'][5].sum(dim=(0,2))).abs().max(), "\n"
-        "decomp (w/ y) vs resid:", ((out_cache['decompose_resid__embed'] + out_cache['decompose_resid__mlps'].sum(dim=0) + out_cache['Y'].sum(dim=(0,1,3))) - out_cache['resid'][-1]).abs().max()
-    )
+
+    if apply_sanity_checks:
+        print(
+            "decomp vs Y:", (out_cache['decompose_resid__attns'][5] - out_cache['Y'][5].sum(dim=(0,2))).abs().max(), "\n"
+            "decomp (w/ y) vs resid:", ((out_cache['decompose_resid__embed'] + out_cache['decompose_resid__mlps'].sum(dim=0) + out_cache['Y'].sum(dim=(0,1,3))) - out_cache['resid'][-1]).abs().max()
+        )
     
     if add_dominance_calc:
         dst_slc = slice(None, None)
@@ -179,7 +184,6 @@ def get_model_hidden_states(
             resid = _out_vecs[:, dst_slc].unsqueeze(-2).unsqueeze(-2).transpose(1, 2)  # layer, head[1], dst, src[1], d_model
             Y = out_cache['Y_all_norm'][:, :, dst_slc]
             # Y.shape, resid.shape  # -> layer, head, dst, src, d_model
-            print(f"{replace_Y_with_XWVO=}")
             if replace_Y_with_XWVO:
                 Y = out_cache['C_all_norm'][:, :, dst_slc]
 
@@ -191,6 +195,7 @@ def get_model_hidden_states(
 
             return dot_prod_vals
 
+        # TODO define what to calculate
         # out_cache['Y@resid'] = get_dot_with_vectors(out_cache['resid']) # layer, head, dst, src
         out_cache['Y@attn'] = get_dot_with_vectors(out_cache['attn'])  # layer, head, dst, src
         # out_cache['(X@W_VO)@attn'] =  get_dot_with_vectors(out_cache['attn'], replace_Y_with_XWVO=True)
@@ -209,19 +214,18 @@ def get_model_hidden_states(
     return out_cache, cache
 
 
-def get_adv_hijack_score(
-    model: HookedTransformer, model_base,
-    msg: str,
-    slcs: Dict[str, slice],
+def get_dom_scores(
+    model: HookedTransformer,
+    msg: str, suffix: str,
     hs_dict: Dict[str, torch.Tensor] = None,
-    src_slc_name: str = 'adv',  # 'instr','adv', 'input',
     dst_slc_name: str = 'chat[-1]',
     hijacking_metric: str ='Y@attn',  # 'Y@resid', 'Y@attn', 'X@WVO@attn', 'Y@dcmp_resid', 'Y@dir
     hijacking_metric_flavor: str = 'sum',  # 'sum', 'sum-top0.1'
 ) -> Float[torch.Tensor, "n_layer"]:
-    
+    msg = msg + suffix
+
     slcs = get_idx_slices(
-        model_base, msg, adv_suffix_len=20
+        model, msg, suffix
     )
     
     # calculate the hijacking score:
@@ -230,15 +234,21 @@ def get_adv_hijack_score(
             model, msg, add_dominance_calc=True, calc_special_matrices=False,
         )
 
-    hijacking_score = (
-        hs_dict[hijacking_metric]  # layer, head, dst, src
-            .sum(dim=1)[:, slcs[dst_slc_name], slcs[src_slc_name]]
-    )  # n_layer, dst, src
+    src_slc_names = ['bos', 'chat_pre', 'instr', 'adv', 'chat[:-1]', 'chat[-1]']  # 'input',
 
-    if hijacking_metric_flavor == 'sum-top0.1':
-        raise NotImplementedError("`sum-top0.1` flavor is not implemented yet.")
-    elif hijacking_metric_flavor == 'sum':
-        hijacking_score = hijacking_score.sum(dim=(1, 2))  # n_layer, dst, src -> n_layer
+    hijacking_score_dict = {}
+    for src_slc_name in src_slc_names:
+        hijacking_score_dict[src_slc_name] = (
+            hs_dict[hijacking_metric]  # layer, head, dst, src
+                .sum(dim=1)[:, slcs[dst_slc_name], slcs[src_slc_name]]
+        )  # n_layer, dst, src
 
-    return hijacking_score
+        if hijacking_metric_flavor == 'sum-top0.1':
+            raise NotImplementedError("`sum-top0.1` flavor is not implemented yet.")
+        elif hijacking_metric_flavor == 'sum':
+            hijacking_score_dict[src_slc_name] = hijacking_score_dict[src_slc_name].sum(dim=(1, 2))  # n_layer, dst, src -> n_layer
 
+    return hijacking_score_dict
+
+
+# TODO another function to support attn@resid + mlp@resid + embed@resid

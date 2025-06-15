@@ -20,9 +20,7 @@ def load_model(model_name):
         model_name,
         hf_model=model_base.model,
         device=model_base.device,
-        # dtype=torch.float32 if 'llama' not in model_name else torch.bfloat16,  # TODO remove hack
         dtype=torch.float32,
-        # fold_ln=True,
     )
     tl_model.cfg.use_attn_in = True
     tl_model.cfg.use_attn_result = True  # for `attn.result`
@@ -32,11 +30,15 @@ def load_model(model_name):
     # HACK to support kv-cahce (due to bug in transformer_lens, when ungrouping attn heads)
     tl_model.cfg.n_key_value_heads = tl_model.cfg.n_heads  
 
-    model_base.tl_model = tl_model
-    model_base.model = None
+    # add more metadata:
+    tl_model.cfg.before_instr_tok_count = model_base.before_instr_tok_count
+    tl_model.cfg.after_instr_tok_count = model_base.after_instr_tok_count
+
+    model_base.del_model()  # remove the original model to save memory
+    del model_base
     torch.set_grad_enabled(False)  # as our interp work does not require gradients
 
-    return tl_model, model_base
+    return tl_model
 
 
 def to_toks(
@@ -73,7 +75,7 @@ def to_toks(
     return input_ids, start_of_gen_idx
 
 
-def generate(  # TODO move to model
+def generate(
     message: str, 
     model: HookedTransformer=None,
     force_output_prefix: str = None,
@@ -138,17 +140,16 @@ def generate(  # TODO move to model
     )
 
 
-def enrich_with_affirm_length(df, model_base, set_mock_affirm_prefix=False, pad_to_max_tokens=None):
+def enrich_with_affirm_length(df, tokenizer, set_mock_affirm_prefix=False, pad_to_max_tokens=None):
     """a heuristic to get the affirmative response's prefix length"""
-
     def heuristic_affirm(x, min_tokens=5):
         new_x = x.split('\n')[0]
         if '.' in new_x:
             new_x = new_x.split('.')[0] + '.'
         if new_x == '':
             # since we want to avoid empty affirm, we take the first 4 tokens
-            toks = model_base.to_toks(x, add_template=False)
-            new_x = model_base.tokenizer.decode(toks[0, :min_tokens])
+            toks = tokenizer.encode(x, return_tensors="pt", add_special_tokens=False)
+            new_x = tokenizer.decode(toks[0, :min_tokens])
         return new_x
 
     def split_by_2nd_comma_if_exists(x):
@@ -160,9 +161,9 @@ def enrich_with_affirm_length(df, model_base, set_mock_affirm_prefix=False, pad_
         return x
 
     def trim_to_max_tokens(x, max_tokens=20):
-        toks = model_base.to_toks(x, add_template=False)
+        toks = tokenizer.encode(x, return_tensors="pt", add_special_tokens=False)
         if toks.shape[1] > max_tokens:  # if too long - trim
-            new_x = model_base.tokenizer.decode(toks[0, :max_tokens])
+            new_x = tokenizer.decode(toks[0, :max_tokens])
             # assert x.startswith(new_x), f"trimming failed: {x} -> {new_x}"
             return new_x
         return x
@@ -173,40 +174,40 @@ def enrich_with_affirm_length(df, model_base, set_mock_affirm_prefix=False, pad_
         df['affirm_str'] = "Sure, here is exactly what you need to do.\n"
     else:
         df['affirm_str'] = df.response.apply(heuristic_affirm).apply(split_by_2nd_comma_if_exists).apply(trim_to_max_tokens)
-    df['affirm_tok_len'] = df.affirm_str.apply(lambda x: model_base.to_toks(x, add_template=False).shape[1])
+    df['affirm_tok_len'] = df.affirm_str.apply(lambda x: tokenizer.encode(x, return_tensors="pt", 
+                                                                          add_special_tokens=False).shape[1])
 
     # [OPTIONAL] add padding tokens for sequences shorther than `pad_to_max_tokens`, following `affirm_tok_len`
     if pad_to_max_tokens is not None:
         df.loc[df.affirm_tok_len < pad_to_max_tokens, 'affirm_str'] = df.loc[df.affirm_tok_len < pad_to_max_tokens].apply(
             # TODO [THIS IS HACKY AND UGLY] find another way!
             lambda x: x.affirm_str + ('\n-' * (pad_to_max_tokens - x.affirm_tok_len)), axis=1)  # TODO this is an ugly hack.
-        df['affirm_tok_len'] = df.affirm_str.apply(lambda x: model_base.to_toks(x, add_template=False).shape[1])
+        df['affirm_tok_len'] = df.affirm_str.apply(lambda x: tokenizer.encode(x, return_tensors="pt", add_special_tokens=False).shape[1])
 
     return df
 
 
 def get_idx_slices(
-        model_base, adv_message, response_str="", 
-        adv_suffix_len=20,  # we mostly use GCG with 20 tokens
+        model, message, suffix, response_str="", 
     ):
     # wraps `get_idx_slices`, but also calculates the affirm length before
-    _affirm_slice_data = enrich_with_affirm_length(pd.DataFrame([{'response': response_str}]), model_base)
+    _affirm_slice_data = enrich_with_affirm_length(pd.DataFrame([{'response': response_str}]), model.tokenizer)
     affirm_str, affirm_tok_len = _affirm_slice_data.affirm_str.item(), _affirm_slice_data.affirm_tok_len.item()
+    print("DEBUG: Affirmative response string:", affirm_str, affirm_tok_len)
     
     # given a model-input string (message + 20-tokens-adv-suffix, under chat template) returns the slices for the different parts (message, adv, chat, affirm, bad)
-    # input_len = model_base.to_toks(adv_message).shape[1]   # DISABLED: NOTE! HF's tokenizer for Gemma _slightly_ differs from TL's one (from some reason).
-    input_len = to_toks(adv_message, model_base.tl_model)[0].shape[1]
-    chat_pre_len = model_base.before_instr_tok_count
-    chat_suffix_len = model_base.after_instr_tok_count
-    affrim_prefix_len = affrim_prefix_len or 20  # 20 mostly fits, when there is an actual `sure, etc.`
+    input_len = to_toks(message + suffix, model, add_chat_template=True)[0].shape[1]
+    chat_pre_len = model.cfg.before_instr_tok_count
+    adv_suffix_len = model.tokenizer.encode(suffix, return_tensors="pt", add_special_tokens=False).shape[1]
+    chat_suffix_len = model.cfg.after_instr_tok_count
     slcs = dict(
         bos=slice(0, 1),  # <BOS>
         chat_pre=slice(1, chat_pre_len),
         instr=slice(chat_pre_len, input_len-adv_suffix_len-chat_suffix_len), 
         adv=slice(input_len-adv_suffix_len-chat_suffix_len, input_len-chat_suffix_len), 
         chat=slice(input_len-chat_suffix_len, input_len), 
-        affirm=slice(input_len, input_len+affrim_prefix_len), 
-        bad=slice(input_len+affrim_prefix_len, None),
+        affirm=slice(input_len, input_len+affirm_tok_len), 
+        bad=slice(input_len+affirm_tok_len, None),
 
         # additional slices:
         chat3_affirm3=slice(input_len - 3, input_len + 3),
@@ -214,6 +215,7 @@ def get_idx_slices(
         input=slice(chat_pre_len, input_len - chat_suffix_len)
         )
     slcs['chat[-1]'] = slice(slcs['chat'].stop - 1, slcs['chat'].stop)  # for the last token in chat slice
+    slcs['chat[:-1]'] = slice(slcs['chat'].start, slcs['chat'].stop - 1)
     
     return slcs
 
