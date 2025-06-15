@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from jaxtyping import Float
 import pandas as pd
+from src.interp.utils import get_idx_slices
 
 
 def get_model_hidden_states(
@@ -20,6 +21,7 @@ def get_model_hidden_states(
     force_output_prefix=None,
     Y_ablation_variant: str = '',
     calc_batch_size: int = 2,
+    given_dir: Float[torch.Tensor, "n_layer, d_model"] = None,  # TODO: support this
 ):
     """
     Returns selected hidden states, and TL's cache object.
@@ -169,11 +171,11 @@ def get_model_hidden_states(
     )
     
     if add_dominance_calc:
+        dst_slc = slice(None, None)
         def get_dot_with_vectors(
             _out_vecs, #: Float['layer, dst, d_model'],
             replace_Y_with_XWVO=False,  # HACK to support replacing Y
-        ):
-            dst_slc = slice(None, None)
+        ):    
             resid = _out_vecs[:, dst_slc].unsqueeze(-2).unsqueeze(-2).transpose(1, 2)  # layer, head[1], dst, src[1], d_model
             Y = out_cache['Y_all_norm'][:, :, dst_slc]
             # Y.shape, resid.shape  # -> layer, head, dst, src, d_model
@@ -193,7 +195,14 @@ def get_model_hidden_states(
         out_cache['Y@attn'] = get_dot_with_vectors(out_cache['attn'])  # layer, head, dst, src
         # out_cache['(X@W_VO)@attn'] =  get_dot_with_vectors(out_cache['attn'], replace_Y_with_XWVO=True)
         # out_cache['Y@dcmp_resid'] = get_dot_with_vectors(out_cache['decompose_resid_coar'])
-        # TODO attentoion-top-1% scores, GCG-dir
+        out_cache['A'] = out_cache['attn_pattern']  # layer, head, dst, src
+
+        if given_dir is not None:
+            out_cache[f"Y@dir"] = torch.einsum(
+                '...d, d -> ...' if len(given_dir.shape) == 1 else 'lhtsd, ld -> lhts',
+                out_cache['Y_all_norm'][:, :, dst_slc],
+                (given_dir / torch.norm(given_dir, dim=-1, keepdim=True)).to(out_cache['Y_all_norm'])
+            )
     
     if return_labels:
         return out_cache, out_labels, cache
@@ -204,17 +213,32 @@ def get_adv_hijack_score(
     model: HookedTransformer, model_base,
     msg: str,
     slcs: Dict[str, slice],
-    layer: int = 20,
-    src_slc_name: str = 'slc_adv',
-    dst_slc_name: str = 'slc_chat[-1]',
-):
-    # TODO move slcs to here (while avoiding circular import)
-
-    # calculate the hijacking score:
-    hs_dict, cache = get_model_hidden_states(
-        model, msg, add_dominance_calc=True, calc_special_matrices=False,
+    hs_dict: Dict[str, torch.Tensor] = None,
+    src_slc_name: str = 'adv',  # 'instr','adv', 'input',
+    dst_slc_name: str = 'chat[-1]',
+    hijacking_metric: str ='Y@attn',  # 'Y@resid', 'Y@attn', 'X@WVO@attn', 'Y@dcmp_resid', 'Y@dir
+    hijacking_metric_flavor: str = 'sum',  # 'sum', 'sum-top0.1'
+) -> Float[torch.Tensor, "n_layer"]:
+    
+    slcs = get_idx_slices(
+        model_base, msg, adv_suffix_len=20
     )
-    hijacking_score = hs_dict['Y@attn'].sum(dim=1)[layer, slcs[dst_slc_name], slcs[src_slc_name]]
-    hijacking_score = hijacking_score.sum()
+    
+    # calculate the hijacking score:
+    if hs_dict is None:
+        hs_dict, _ = get_model_hidden_states(
+            model, msg, add_dominance_calc=True, calc_special_matrices=False,
+        )
+
+    hijacking_score = (
+        hs_dict[hijacking_metric]  # layer, head, dst, src
+            .sum(dim=1)[:, slcs[dst_slc_name], slcs[src_slc_name]]
+    )  # n_layer, dst, src
+
+    if hijacking_metric_flavor == 'sum-top0.1':
+        raise NotImplementedError("`sum-top0.1` flavor is not implemented yet.")
+    elif hijacking_metric_flavor == 'sum':
+        hijacking_score = hijacking_score.sum(dim=(1, 2))  # n_layer, dst, src -> n_layer
+
     return hijacking_score
 
