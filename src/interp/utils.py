@@ -193,10 +193,10 @@ def get_idx_slices(
     # wraps `get_idx_slices`, but also calculates the affirm length before
     _affirm_slice_data = enrich_with_affirm_length(pd.DataFrame([{'response': response_str}]), model.tokenizer)
     affirm_str, affirm_tok_len = _affirm_slice_data.affirm_str.item(), _affirm_slice_data.affirm_tok_len.item()
-    print("DEBUG: Affirmative response string:", affirm_str, affirm_tok_len)
+    affirm_tok_len = affirm_tok_len or 20  # default to 20 if not set
     
     # given a model-input string (message + 20-tokens-adv-suffix, under chat template) returns the slices for the different parts (message, adv, chat, affirm, bad)
-    input_len = to_toks(message + suffix, model, add_chat_template=True)[0].shape[1]
+    input_len = to_toks(message + suffix, model)[0].shape[1]
     chat_pre_len = model.cfg.before_instr_tok_count
     adv_suffix_len = model.tokenizer.encode(suffix, return_tensors="pt", add_special_tokens=False).shape[1]
     chat_suffix_len = model.cfg.after_instr_tok_count

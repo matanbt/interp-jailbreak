@@ -222,7 +222,6 @@ def get_dom_scores(
     hijacking_metric: str ='Y@attn',  # 'Y@resid', 'Y@attn', 'X@WVO@attn', 'Y@dcmp_resid', 'Y@dir
     hijacking_metric_flavor: str = 'sum',  # 'sum', 'sum-top0.1'
 ) -> Float[torch.Tensor, "n_layer"]:
-    msg = msg + suffix
 
     slcs = get_idx_slices(
         model, msg, suffix
@@ -231,7 +230,7 @@ def get_dom_scores(
     # calculate the hijacking score:
     if hs_dict is None:
         hs_dict, _ = get_model_hidden_states(
-            model, msg, add_dominance_calc=True, calc_special_matrices=False,
+            model, msg + suffix, add_dominance_calc=True, calc_special_matrices=False,
         )
 
     src_slc_names = ['bos', 'chat_pre', 'instr', 'adv', 'chat[:-1]', 'chat[-1]']  # 'input',
