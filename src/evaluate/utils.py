@@ -19,12 +19,14 @@ def load_data(
     suffix_cats=None # ['reg', 'init'],
 ):
     ## load data:
+    # TODO load from HF:
+
     if model_name == "google/gemma-2-2b-it":
-        file_path = "artifacts/gcg_data/v2/suffixed_msgs_w_resp_w_eval_prfl__gemma_gcg_affirm__raw_df.bz2"
+        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__gemma_gcg_affirm__raw_df.bz2"
     elif model_name == "qwen/qwen2.5-1.5b-instruct":
-        file_path = "artifacts/gcg_data/v2_qwen2.5/suffixed_msgs_w_resp_w_eval_prfl__qwen2.5-1.5b-instruct_gcg_affirm.bz2"
+        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__qwen2.5-1.5b-instruct_gcg_affirm.bz2"
     elif model_name == "meta-llama/llama-3.1-8b-instruct":
-        file_path = "artifacts/gcg_data/v2_llama3.1/suffixed_msgs_w_resp_w_eval_prfl__llama3.1_gcg_affirm.bz2"
+        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__llama3.1_gcg_affirm.bz2"
     else:
         raise ValueError(f"Model {model_name} not supported.")
 
@@ -120,52 +122,6 @@ def categorize_suffixes(df, fine_intrmd: bool = False):
             return 'reg'
 
     df['suffix_cat'] = df.suffix_id.apply(_suff_to_cat) + df.is_mult_attack.apply(lambda x: '_mult' if x else '')
-
-    return df
-
-def enrich_with_affirm_length(df, model_base, set_mock_affirm_prefix=False, pad_to_max_tokens=None):
-    """a heuristic to get the affirmative response's prefix length"""
-
-    def heuristic_affirm(x, min_tokens=5):
-        new_x = x.split('\n')[0]
-        if '.' in new_x:
-            new_x = new_x.split('.')[0] + '.'
-        if new_x == '':
-            # since we want to avoid empty affirm, we take the first 4 tokens
-            toks = model_base.to_toks(x, add_template=False)
-            new_x = model_base.tokenizer.decode(toks[0, :min_tokens])
-        return new_x
-
-    def split_by_2nd_comma_if_exists(x):
-        if ':' in x[10:]:
-            return x[:10] + x[10:].split(':')[0] + ':'
-        if ',' in x[10:]:
-            return x[:10] + x[10:].split(',')[0] + ','
-
-        return x
-
-    def trim_to_max_tokens(x, max_tokens=20):
-        toks = model_base.to_toks(x, add_template=False)
-        if toks.shape[1] > max_tokens:  # if too long - trim
-            new_x = model_base.tokenizer.decode(toks[0, :max_tokens])
-            # assert x.startswith(new_x), f"trimming failed: {x} -> {new_x}"
-            return new_x
-        return x
-
-    if set_mock_affirm_prefix:
-        # we set a fixed affirm prefix
-        # df['affirm_str'] = "Sure, here's what you need:\n"
-        df['affirm_str'] = "Sure, here is exactly what you need to do.\n"
-    else:
-        df['affirm_str'] = df.response.apply(heuristic_affirm).apply(split_by_2nd_comma_if_exists).apply(trim_to_max_tokens)
-    df['affirm_tok_len'] = df.affirm_str.apply(lambda x: model_base.to_toks(x, add_template=False).shape[1])
-
-    # [OPTIONAL] add padding tokens for sequences shorther than `pad_to_max_tokens`, following `affirm_tok_len`
-    if pad_to_max_tokens is not None:
-        df.loc[df.affirm_tok_len < pad_to_max_tokens, 'affirm_str'] = df.loc[df.affirm_tok_len < pad_to_max_tokens].apply(
-            # TODO [THIS IS HACKY AND UGLY] find another way!
-            lambda x: x.affirm_str + ('\n-' * (pad_to_max_tokens - x.affirm_tok_len)), axis=1)  # TODO this is an ugly hack.
-        df['affirm_tok_len'] = df.affirm_str.apply(lambda x: model_base.to_toks(x, add_template=False).shape[1])
 
     return df
 

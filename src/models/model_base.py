@@ -4,6 +4,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 from tqdm import tqdm
 from torch import Tensor
 import torch
+from jaxtyping import Float, Bool
 
 
 class ModelBase(ABC):
@@ -34,7 +35,7 @@ class ModelBase(ABC):
             del self.model
 
     def _post_init_validations(self):
-        if self.model.dtype in [torch.float16, torch.bfloat16]:
+        if self.model.dtype not in [torch.float16, torch.bfloat16]:
             print("[WARNING]", f"Model dtype is (probably) too big: {self.model.dtype}")
         assert self.tokenizer.chat_template is not None, "Tokenizer does not have a chat template"
 

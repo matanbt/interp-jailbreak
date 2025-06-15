@@ -138,9 +138,55 @@ def generate(  # TODO move to model
     )
 
 
+def enrich_with_affirm_length(df, model_base, set_mock_affirm_prefix=False, pad_to_max_tokens=None):
+    """a heuristic to get the affirmative response's prefix length"""
+
+    def heuristic_affirm(x, min_tokens=5):
+        new_x = x.split('\n')[0]
+        if '.' in new_x:
+            new_x = new_x.split('.')[0] + '.'
+        if new_x == '':
+            # since we want to avoid empty affirm, we take the first 4 tokens
+            toks = model_base.to_toks(x, add_template=False)
+            new_x = model_base.tokenizer.decode(toks[0, :min_tokens])
+        return new_x
+
+    def split_by_2nd_comma_if_exists(x):
+        if ':' in x[10:]:
+            return x[:10] + x[10:].split(':')[0] + ':'
+        if ',' in x[10:]:
+            return x[:10] + x[10:].split(',')[0] + ','
+
+        return x
+
+    def trim_to_max_tokens(x, max_tokens=20):
+        toks = model_base.to_toks(x, add_template=False)
+        if toks.shape[1] > max_tokens:  # if too long - trim
+            new_x = model_base.tokenizer.decode(toks[0, :max_tokens])
+            # assert x.startswith(new_x), f"trimming failed: {x} -> {new_x}"
+            return new_x
+        return x
+
+    if set_mock_affirm_prefix:
+        # we set a fixed affirm prefix
+        # df['affirm_str'] = "Sure, here's what you need:\n"
+        df['affirm_str'] = "Sure, here is exactly what you need to do.\n"
+    else:
+        df['affirm_str'] = df.response.apply(heuristic_affirm).apply(split_by_2nd_comma_if_exists).apply(trim_to_max_tokens)
+    df['affirm_tok_len'] = df.affirm_str.apply(lambda x: model_base.to_toks(x, add_template=False).shape[1])
+
+    # [OPTIONAL] add padding tokens for sequences shorther than `pad_to_max_tokens`, following `affirm_tok_len`
+    if pad_to_max_tokens is not None:
+        df.loc[df.affirm_tok_len < pad_to_max_tokens, 'affirm_str'] = df.loc[df.affirm_tok_len < pad_to_max_tokens].apply(
+            # TODO [THIS IS HACKY AND UGLY] find another way!
+            lambda x: x.affirm_str + ('\n-' * (pad_to_max_tokens - x.affirm_tok_len)), axis=1)  # TODO this is an ugly hack.
+        df['affirm_tok_len'] = df.affirm_str.apply(lambda x: model_base.to_toks(x, add_template=False).shape[1])
+
+    return df
+
 
 def get_idx_slices(
-        model_base, adv_message, response_str, 
+        model_base, adv_message, response_str="", 
         adv_suffix_len=20,  # we mostly use GCG with 20 tokens
     ):
     # wraps `get_idx_slices`, but also calculates the affirm length before
@@ -154,20 +200,20 @@ def get_idx_slices(
     chat_suffix_len = model_base.after_instr_tok_count
     affrim_prefix_len = affrim_prefix_len or 20  # 20 mostly fits, when there is an actual `sure, etc.`
     slcs = dict(
-        slc_bos=slice(0, 1),  # <BOS>
-        slc_chat_pre=slice(1, chat_pre_len),
-        slc_instr=slice(chat_pre_len, input_len-adv_suffix_len-chat_suffix_len), 
-        slc_adv=slice(input_len-adv_suffix_len-chat_suffix_len, input_len-chat_suffix_len), 
-        slc_chat=slice(input_len-chat_suffix_len, input_len), 
-        slc_affirm=slice(input_len, input_len+affrim_prefix_len), 
-        slc_bad=slice(input_len+affrim_prefix_len, None),
+        bos=slice(0, 1),  # <BOS>
+        chat_pre=slice(1, chat_pre_len),
+        instr=slice(chat_pre_len, input_len-adv_suffix_len-chat_suffix_len), 
+        adv=slice(input_len-adv_suffix_len-chat_suffix_len, input_len-chat_suffix_len), 
+        chat=slice(input_len-chat_suffix_len, input_len), 
+        affirm=slice(input_len, input_len+affrim_prefix_len), 
+        bad=slice(input_len+affrim_prefix_len, None),
 
         # additional slices:
-        slc_chat3_affirm3=slice(input_len - 3, input_len + 3),
-        slc_chat_s2=slice(input_len - 2, input_len),
-        slc_input=slice(chat_pre_len, input_len - chat_suffix_len)
+        chat3_affirm3=slice(input_len - 3, input_len + 3),
+        chat_s2=slice(input_len - 2, input_len),
+        input=slice(chat_pre_len, input_len - chat_suffix_len)
         )
-    slcs['slc_chat[-1]'] = slice(slcs['slc_chat'].stop - 1, slcs['slc_chat'].stop)  # for the last token in chat slice
+    slcs['chat[-1]'] = slice(slcs['chat'].stop - 1, slcs['chat'].stop)  # for the last token in chat slice
     
     return slcs
 

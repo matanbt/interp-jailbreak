@@ -1,4 +1,4 @@
-from src.models import ModelBase
+from src.models.model_base import ModelBase
 
 def construct_model_base(model_path: str) -> ModelBase:
     if 'qwen' in model_path.lower():

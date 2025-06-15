@@ -39,7 +39,7 @@ def heatmap_with_direction(
     def _extract_hidden_states(hs, labels, hook, slcs):
         if hook.startswith('Y_'):
             hook, slc_name, idx = hook.split('_')
-            hs = hs[hook](slcs[f'slc_{slc_name}'].start + int(idx))
+            hs = hs[hook](slcs[slc_name].start + int(idx))
         if isinstance(labels, dict): labels = labels[hook]
         if isinstance(hs, dict): hs = hs[hook]
         return hs, labels
@@ -117,7 +117,7 @@ def heatmap_with_direction(
     
     if slcs is not None:  # add vertical lines for slices
         for slc_name, slc in slcs.items():
-            if slc_name not in ["slc_instr", "slc_adv", "slc_chat", "slc_affirm"]:
+            if slc_name not in ["instr", "adv", "chat", "affirm"]:
                 continue
             fig.add_shape(
                type="line", x0=slc.start-0.5, y0=0, x1=slc.start-0.5, y1=len(labels), line=dict(color="red", width=2)
@@ -152,7 +152,7 @@ def plot_conrib_bar(
 ):
     # hs_dict['decompose_resid__embed'] + hs_dict['decompose_resid__mlps'].sum(dim=0) + hs_dict['Y_all_norm_T'].sum(dim=(0,1,2)).cuda()) - 
 
-    pos_to_inspect = pos_to_inspect if pos_to_inspect is not None else slcs['slc_chat'].stop - 1
+    pos_to_inspect = pos_to_inspect if pos_to_inspect is not None else slcs['chat'].stop - 1
     dir_to_inspect = dir_to_inspect if dir_to_inspect is not None else hs_dict['resid'][up_to_layer-1, pos_to_inspect]
     slcs['slc_self'] = slice(pos_to_inspect, pos_to_inspect + 1)  # add self-slice
     
