@@ -1,5 +1,6 @@
 
 import random
+from huggingface_hub import hf_hub_download
 import pandas as pd
 from typing import List
 import pandas as pd
@@ -21,16 +22,22 @@ def load_data(
     ## load data:
     # TODO load from HF:
 
-    if model_name == "google/gemma-2-2b-it":
-        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__gemma_gcg_affirm__raw_df.bz2"
-    elif model_name == "qwen/qwen2.5-1.5b-instruct":
-        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__qwen2.5-1.5b-instruct_gcg_affirm.bz2"
-    elif model_name == "meta-llama/llama-3.1-8b-instruct":
-        file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__llama3.1_gcg_affirm.bz2"
-    else:
-        raise ValueError(f"Model {model_name} not supported.")
+    # if model_name == "google/gemma-2-2b-it":
+    #     file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__gemma_gcg_affirm__raw_df.bz2"
+    # elif model_name == "qwen/qwen2.5-1.5b-instruct":
+    #     file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__qwen2.5-1.5b-instruct_gcg_affirm.bz2"
+    # elif model_name == "meta-llama/llama-3.1-8b-instruct":
+    #     file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__llama3.1_gcg_affirm.bz2"
+    # else:
+    #     raise ValueError(f"Model {model_name} not supported.")
 
-    df = pd.read_pickle(file_path, compression='bz2')
+    # df = pd.read_pickle(file_path, compression='bz2')
+
+    ## Load from HF:
+    df = pd.read_parquet(
+        hf_hub_download(repo_id='MatanBT/gcg-evaluated-data', repo_type="dataset",
+                        filename=f"{model_name.split('/')[-1]}_eval_data.parquet")
+    )
 
     # filter to non-mult messages:
     df = df[~df.is_mult_attack]
