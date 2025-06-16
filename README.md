@@ -1,6 +1,9 @@
 # interp-jailbreak
 The official repository for the paper “Universal Jailbreak Suffixes Are Strong Attention Hijackers”.
-![](image.png)
+
+<div align="center">
+<img width="600" src="docs/fig1.png">
+</div>
 
 
 ## Setup
