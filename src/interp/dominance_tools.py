@@ -16,24 +16,20 @@ def get_model_hidden_states(
     model: HookedTransformer,
     toks: Union[List[int], str],
     return_labels: bool = False,
-    calc_special_matrices: bool = False,
-    add_dominance_calc: bool = False,
     force_output_prefix=None,
-    Y_ablation_variant: str = '',
-    calc_batch_size: int = 2,
-    given_dir: Float[torch.Tensor, "n_layer d_model"] = None,  # TODO: support this
-
     apply_sanity_checks: bool = False,
+
+    # dominance score calculation:
+    add_dominance_calc: bool = False,
+    given_dir: Float[torch.Tensor, "n_layer d_model"] = None,
+    selected_dom_scores: List[str] = ['Y@attn'],
 ):
     """
     Returns selected hidden states, and TL's cache object.
     Optionally, if `return_labels`, returns labels and layer count per hook.
     """
-    calc_special_matrices = False  # currently done in TL and disabled
-    torch.cuda.empty_cache()
     gc.collect()
     torch.cuda.empty_cache()
-    gc.collect()
     # 0. tokenize if needed:
     if isinstance(toks, str):
         toks, _ = to_toks(toks, model, force_output_prefix=force_output_prefix)
@@ -56,16 +52,16 @@ def get_model_hidden_states(
         'mlp': 'blocks.{layer}.hook_mlp_out',
 
         # fine grained attn:
-        # 'resids_pre_attn': 'blocks.{layer}.ln1.hook_normalized_post', # layer, seq_len, hidden_size  #[UNUSED]
         'X_in': 'blocks.{layer}.attn.hook_X_in',  # layer, head, src_pos, hidden_size
         'X_WVO': 'blocks.{layer}.attn.hook_X_WVO', # layer, head, src_pos, d_model
         'Y': 'blocks.{layer}.hook_Y_out',  # layer, head, seq_len (dst), seq_len (src), hidden_size
     }
-    out_cache, out_labels = {}, {}
+    hs_dict, hs_dict_labels = {}, {}
     
+    _orig_use_attn_fine_grained = model.cfg.use_attn_fine_grained
     model.set_use_attn_fine_grained(True)  # temporarily enable fine-grained attention hooks
     _, cache = model.run_with_cache(toks)
-    model.set_use_attn_fine_grained(False)
+    model.set_use_attn_fine_grained(_orig_use_attn_fine_grained)  # restore original setting
     cache = cache.to('cpu')
     gc.collect()
     torch.cuda.empty_cache()
@@ -82,146 +78,106 @@ def get_model_hidden_states(
             labels = [f"{hook_name}-l{layer}" for layer in range(n_layers)]
         
         # save all:
-        out_cache[hook_name] = hidden_states.cpu()
-        out_labels[hook_name] = labels
+        hs_dict[hook_name] = hidden_states.cpu()
+        hs_dict_labels[hook_name] = labels
 
     ## save embed, mlps and attn separately
-    out_cache['decompose_resid__embed'] = out_cache['decompose_resid'][0]  # embed
-    out_labels['decompose_resid__embed'] = ['embed']
-    out_cache['decompose_resid__attns'] = out_cache['decompose_resid'][list(range(1, 2 * n_layers, 2))]  # attns
-    out_labels['decompose_resid__attns'] = [f"attn l{layer}" for layer in range(n_layers)]
-    out_cache['decompose_resid__mlps'] = out_cache['decompose_resid'][list(range(2, 2 * n_layers + 1, 2))]  # mlps
-    out_labels['decompose_resid__mlps'] = [f"mlp l{layer}" for layer in range(n_layers)]
+    hs_dict['decompose_resid__embed'] = hs_dict['decompose_resid'][0]  # embed
+    hs_dict_labels['decompose_resid__embed'] = ['embed']
+    hs_dict['decompose_resid__attns'] = hs_dict['decompose_resid'][list(range(1, 2 * n_layers, 2))]  # attns
+    hs_dict_labels['decompose_resid__attns'] = [f"attn l{layer}" for layer in range(n_layers)]
+    hs_dict['decompose_resid__mlps'] = hs_dict['decompose_resid'][list(range(2, 2 * n_layers + 1, 2))]  # mlps
+    hs_dict_labels['decompose_resid__mlps'] = [f"mlp l{layer}" for layer in range(n_layers)]
 
     ## coarse version of decompose_resid:
     decomp_resid_coar = torch.zeros((n_layers, len(toks), model.cfg.d_model))
-    decomp_resid_coar[0] = out_cache['decompose_resid__embed']  # embed
+    decomp_resid_coar[0] = hs_dict['decompose_resid__embed']  # embed
     for layer in range(0, n_layers):
-        decomp_resid_coar[layer] += out_cache['decompose_resid__mlps'][layer]
-        decomp_resid_coar[layer] += out_cache['decompose_resid__attns'][layer]
-    out_cache['decompose_resid_coar'] = decomp_resid_coar
-    out_labels['decompose_resid_coar'] = [f"decomp_resid_coar l{layer}" for layer in range(n_layers)]
+        decomp_resid_coar[layer] += hs_dict['decompose_resid__mlps'][layer]
+        decomp_resid_coar[layer] += hs_dict['decompose_resid__attns'][layer]
+    hs_dict['decompose_resid_coar'] = decomp_resid_coar
+    hs_dict['decompose_resid_coar'] = [f"decomp_resid_coar l{layer}" for layer in range(n_layers)]
     
-    ## add my attention reformulations:
-    if calc_special_matrices:
-        out_cache['C'], out_cache['C_all'], out_cache['Y_all'] = my_attention_reformulations(
-            model, 
-            out_cache['resids_pre_attn'], 
-            out_cache['attn_pattern'],
-            ablation_variant=Y_ablation_variant,
-            calc_batch_size=calc_batch_size,
-        )
-        ## i. Matrix C:
-        out_cache['C'] = out_cache['C'].cpu()  # layer, head, seq_len[src], d_model
-        
-        # flatten C's first two dims, and record the labels:
-        out_cache['C_flat'] = out_cache['C'].flatten(0, 1).cpu()
-        out_labels['C_flat'] = [f"C l{layer}-h{head}" for layer in range(n_layers) for head in range(model.cfg.n_heads)]
-
-        ## ii. normalized Y:
-        # out_cache['Y_all']  # layer, head, seq_len[dst], seq_len[src], d_model
-        out_cache['Y_all_norm'] = torch.zeros_like(out_cache['Y_all'])
-        out_cache['C_all_norm'] = torch.zeros_like(out_cache['C_all'])
-
-        for layer in range(n_layers):
-            y_in_layer = out_cache['Y_all'][layer]            # head, seq_len[dst], seq_len[src], d_model
-            c_in_layer = out_cache['C_all'][layer]            # head, seq_len[dst], seq_len[src], d_model
-            
-            # we perform RMSNorm per layer's attn (Gemma's) [https://github.com/TransformerLensOrg/TransformerLens/blob/main/transformer_lens/components/rms_norm.py#L15]
-            scale = cache[f'blocks.{layer}.ln1_post.hook_scale'].to(y_in_layer.device)[0].unsqueeze(-1).unsqueeze(0)  # 1, seq_len, 1, 1  (for: head, seq_dst, seq_src, d_model)
-            w = model.blocks[layer].ln1_post.w.to(y_in_layer.device).unsqueeze(0).unsqueeze(0).unsqueeze(0) # 1, 1, 1 d_model  (for: head, seq_dst, seq_src, d_model)
-
-            y_in_layer = (y_in_layer / scale) * w
-            c_in_layer = (c_in_layer / scale) * w
-
-            out_cache['Y_all_norm'][layer] = y_in_layer
-            out_cache['C_all_norm'][layer] = c_in_layer
-
-        out_cache['Y_all_norm'] = out_cache['Y_all_norm'].cpu()
-        out_labels['Y_all_norm'] = [f"Y_all_norm l{layer}-h{head}" for layer in range(n_layers) for head in range(model.cfg.n_heads)]
-
-        out_cache['C_all_norm'] = out_cache['C_all_norm'].cpu()
-
-        # an optional transpose (keeps dims consistent)
-        out_cache['Y_all_norm_T'] = out_cache['Y_all_norm'].transpose(2, 3).cpu()  # layer, head, seq_len[src], seq_len[dst], d_model
-        out_labels['Y_all_norm_T'] = out_labels['Y_all_norm']
-
-        # assert torch.allclose(out_cache['decompose_resid__attns'][5], out_cache['Y_all_norm_T'][5].sum(dim=(0,1)).cuda()), "Y_all_norm calc probably gone wrong."
-
-        ## iii. Matrix Y (changes according to the dst token in focus)
-        def _calc_Y(
-                _Y_dst_focus=-1
-            ):
-            return out_cache['Y_all_norm'][..., _Y_dst_focus, :, :].flatten(0, 1).cpu()
-        
-        out_cache['Y'] = _calc_Y
-        out_labels['Y'] = [f"Y l{layer}-h{head}" for layer in range(n_layers) for head in range(model.cfg.n_heads)]
-
-        if apply_sanity_checks:
-            print(
-                "decomp vs Y:", (out_cache['decompose_resid__attns'][5] - out_cache['Y_all_norm_T'][5].sum(dim=(0,1))).abs().max(), "\n"
-                "decomp (w/ y) vs resid:", ((out_cache['decompose_resid__embed'] + out_cache['decompose_resid__mlps'].sum(dim=0) + out_cache['Y_all_norm_T'].sum(dim=(0,1,2))) - out_cache['resid'][-1]).abs().max()
-            )
-
-    # legacy names:
-    out_cache['resids_pre_attn'] = out_cache['X_in']
-    out_cache['Y_all_norm'] = out_cache['Y']
-    out_cache['C_all_norm'] = out_cache['X_WVO'].unsqueeze(2).repeat(1, 1, out_cache['X_WVO'].shape[2], 1, 1)  # repeat dst_pos --> layer, head, src_pos, dst_pos, d_model
-    out_labels['Y_all_norm'] = [f"Y_all_norm l{layer}-h{head}" for layer in range(n_layers) for head in range(model.cfg.n_heads)]
+    ## legacy names:
+    hs_dict['resids_pre_attn'] = hs_dict['X_in']
+    hs_dict['Y_all_norm'] = hs_dict['Y']
+    hs_dict['C_all_norm'] = hs_dict['X_WVO'].unsqueeze(2).repeat(1, 1, hs_dict_labels['X_WVO'].shape[2], 1, 1)  # repeat dst_pos --> layer, head, src_pos, dst_pos, d_model
+    hs_dict['A'] = hs_dict['attn_pattern']  # layer, head, dst_pos, src_pos
 
     if apply_sanity_checks:
         print(
-            "decomp vs Y:", (out_cache['decompose_resid__attns'][5] - out_cache['Y'][5].sum(dim=(0,2))).abs().max(), "\n"
-            "decomp (w/ y) vs resid:", ((out_cache['decompose_resid__embed'] + out_cache['decompose_resid__mlps'].sum(dim=0) + out_cache['Y'].sum(dim=(0,1,3))) - out_cache['resid'][-1]).abs().max()
+            "decomp vs Y:", (hs_dict_labels['decompose_resid__attns'][5] - hs_dict_labels['Y'][5].sum(dim=(0,2))).abs().max(), "\n"
+            "decomp (w/ y) vs resid:", ((hs_dict_labels['decompose_resid__embed'] + hs_dict_labels['decompose_resid__mlps'].sum(dim=0) + hs_dict_labels['Y'].sum(dim=(0,1,3))) - hs_dict_labels['resid'][-1]).abs().max()
         )
     
+    ## dominance score calculation:
     if add_dominance_calc:
-        dst_slc = slice(None, None)
-        def get_dot_with_vectors(
-            _out_vecs, #: Float['layer, dst, d_model'],
-            replace_Y_with_XWVO=False,  # HACK to support replacing Y
-        ):    
-            resid = _out_vecs[:, dst_slc].unsqueeze(-2).unsqueeze(-2).transpose(1, 2)  # layer, head[1], dst, src[1], d_model
-            Y = out_cache['Y_all_norm'][:, :, dst_slc]
-            # Y.shape, resid.shape  # -> layer, head, dst, src, d_model
-            if replace_Y_with_XWVO:
-                Y = out_cache['C_all_norm'][:, :, dst_slc]
-
-            # perform dot product of the last dimension
-            dot_prod_vals = torch.einsum('lhtsd,lktkd->lhts', Y, resid)  # layer, head, dst, src
-            
-            # normalize per layer and (dst) token position
-            dot_prod_vals = dot_prod_vals / torch.norm(resid, dim=-1).pow(2)  # layer, head, dst, src
-
-            return dot_prod_vals
-
-        # TODO define what to calculate
-        # out_cache['Y@resid'] = get_dot_with_vectors(out_cache['resid']) # layer, head, dst, src
-        out_cache['Y@attn'] = get_dot_with_vectors(out_cache['attn'])  # layer, head, dst, src
-        # out_cache['(X@W_VO)@attn'] =  get_dot_with_vectors(out_cache['attn'], replace_Y_with_XWVO=True)
-        # out_cache['Y@dcmp_resid'] = get_dot_with_vectors(out_cache['decompose_resid_coar'])
-        out_cache['A'] = out_cache['attn_pattern']  # layer, head, dst, src
-
-        if given_dir is not None:
-            out_cache[f"Y@dir"] = torch.einsum(
-                '...d, d -> ...' if len(given_dir.shape) == 1 else 'lhtsd, ld -> lhts',
-                out_cache['Y_all_norm'][:, :, dst_slc],
-                (given_dir / torch.norm(given_dir, dim=-1, keepdim=True)).to(out_cache['Y_all_norm'])
-            )
+        _get_dominance_scores_full(
+            hs_dict,
+            given_dir=given_dir,
+            selected_dom_scores=selected_dom_scores,
+        )
     
     if return_labels:
-        return out_cache, out_labels, cache
-    return out_cache, cache
+        return hs_dict, hs_dict_labels, cache
+    return hs_dict, cache
 
 
-def get_dom_scores(
+def _get_dominance_scores_full(
+    hs_dict: Dict[str, torch.Tensor],
+    given_dir: Float[torch.Tensor, "n_layer d_model"] = None,  # direction to calculate dominance in
+    selected_dom_scores=['Y@attn'], # list of keys to calculate dominance scores for
+    dst_slc: slice = slice(None, None),  # dst slice for the attention (default to all)
+):
+    dst_slc = slice(None, None)
+    def get_dot_with_vectors(
+        main_vecs: Float[torch.Tensor, 'n_layer head dst src d_model'],  # main vectors to calculate the dot product with
+        ref_vecs: Float[torch.Tensor, 'n_layer dst d_model'],
+    ):    
+        main_vecs =main_vecs[:, :, dst_slc]
+        ref_vecs = ref_vecs[:, dst_slc].unsqueeze(-2).unsqueeze(-2).transpose(1, 2)  # layer, head[1], dst, src[1], d_model
+        # main_vecs.shape, ref_vecs.shape  # -> layer, head, dst, src, d_model
+
+        # perform dot product of the last dimension
+        dot_prod_vals = torch.einsum('lhtsd,lktkd->lhts', main_vecs, ref_vecs)  # layer, head, dst, src
+        
+        # normalize per layer and (dst) token position
+        dot_prod_vals = dot_prod_vals / torch.norm(ref_vecs, dim=-1).pow(2)  # layer, head, dst, src
+
+        return dot_prod_vals
+
+    dom_score_to_args = {
+        # TODO verify the following two:
+        # 'Y@resid': {'out_vecs': hs_dict['resids_pre_attn']},  
+        # 'Y@dcmp_resid': {'out_vecs': hs_dict['decompose_resid_coar']},
+
+        'Y@attn': {'main_vecs': hs_dict['Y'], 'ref_vecs': hs_dict['attn']},
+        '(X@W_VO)@attn': {'main_vecs': hs_dict['X_WVO'], 'ref_vecs': hs_dict['attn'], 'replace_Y_with_XWVO': True},
+    }
+    for dom_score_key in selected_dom_scores:
+        hs_dict[dom_score_key] = get_dot_with_vectors(**dom_score_to_args[dom_score_key])
+
+    if given_dir is not None:  # calculate direction-specific dominance scores
+        hs_dict[f"Y@dir"] = torch.einsum(
+            '...d, d -> ...' if len(given_dir.shape) == 1 else 'lhtsd, ld -> lhts',
+            hs_dict['Y'][:, :, dst_slc],
+            (given_dir / torch.norm(given_dir, dim=-1, keepdim=True)).to(hs_dict['Y'])
+        )
+
+    return hs_dict
+
+
+def get_dominance_scores(
     model: HookedTransformer,
     msg: str, suffix: str,
     hs_dict: Dict[str, torch.Tensor] = None,
     dst_slc_name: str = 'chat[-1]',
-    hijacking_metric: str ='Y@attn',  # 'Y@resid', 'Y@attn', 'X@WVO@attn', 'Y@dcmp_resid', 'Y@dir
-    hijacking_metric_flavor: str = 'sum',  # 'sum', 'sum-top0.1'
+    dominance_metric: str ='Y@attn', 
+    dominance_metric_flavor: str = 'sum',  # 'sum', 'sum-top0.1'
 ) -> Float[torch.Tensor, "n_layer"]:
+    """
+    Self-contained function to calculate dominance scores for a given message and suffix.
+    """
 
     slcs = get_idx_slices(
         model, msg, suffix
@@ -230,24 +186,24 @@ def get_dom_scores(
     # calculate the hijacking score:
     if hs_dict is None:
         hs_dict, _ = get_model_hidden_states(
-            model, msg + suffix, add_dominance_calc=True, calc_special_matrices=False,
+            model, msg + suffix, selected_dom_scores=[dominance_metric],
         )
 
-    src_slc_names = ['bos', 'chat_pre', 'instr', 'adv', 'chat[:-1]', 'chat[-1]']  # 'input',
+    src_slc_names = ['bos', 'chat_pre', 'instr', 'adv', 'chat[:-1]', 'chat[-1]']
 
-    hijacking_score_dict = {}
+    dominance_score_dict = {}
     for src_slc_name in src_slc_names:
-        hijacking_score_dict[src_slc_name] = (
-            hs_dict[hijacking_metric]  # layer, head, dst, src
+        dominance_score_dict[src_slc_name] = (
+            hs_dict[dominance_metric]  # layer, head, dst, src
                 .sum(dim=1)[:, slcs[dst_slc_name], slcs[src_slc_name]]
         )  # n_layer, dst, src
 
-        if hijacking_metric_flavor == 'sum-top0.1':
+        if dominance_metric_flavor == 'sum-top0.1':
             raise NotImplementedError("`sum-top0.1` flavor is not implemented yet.")
-        elif hijacking_metric_flavor == 'sum':
-            hijacking_score_dict[src_slc_name] = hijacking_score_dict[src_slc_name].sum(dim=(1, 2))  # n_layer, dst, src -> n_layer
+        elif dominance_metric_flavor == 'sum':
+            dominance_score_dict[src_slc_name] = dominance_score_dict[src_slc_name].sum(dim=(1, 2))  # n_layer, dst, src -> n_layer
 
-    return hijacking_score_dict
+    return dominance_score_dict
 
 
 # TODO another function to support attn@resid + mlp@resid + embed@resid

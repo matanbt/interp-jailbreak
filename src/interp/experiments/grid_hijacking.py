@@ -34,13 +34,15 @@ import src.interp.dominance_tools as dominance_tools
 df = []
 
 for message_id, suffix_id in product(message_ids, suffix_ids):
-    message_str = data_df[data_df.message_id == message_id].iloc[0].message_str
-    suffix_row = data_df[data_df.suffix_id == suffix_id].iloc[0]
-    suffix_str, suffix_univ, suffix_id = suffix_row.suffix_str, suffix_row.univ_score, suffix_row.suffix_id
+    row = data_df[(data_df.message_id == message_id) & (data_df.suffix_id == suffix_id)].iloc[0]
+    message_str = row.message_str
+    suffix_str, suffix_univ, suffix_id = row.suffix_str, row.univ_score, row.suffix_id
+    response_score, response_category = row.strongreject_finetuned, row.category
 
     dom_scores = dominance_tools.get_dom_scores(
         model,
         message_str, suffix_str,
+        hs_dict=TODO,
         dst_slc_name = 'chat[-1]',
         hijacking_metric ='Y@attn',  # TODO iterate on configurable list (incl. attetnion and Y@dir)
         hijacking_metric_flavor = 'sum',  # TODO iterate on multiple (also consider variance? attn tracker inspired?)
@@ -52,6 +54,8 @@ for message_id, suffix_id in product(message_ids, suffix_ids):
             # 'message_str': message_str,
             # 'suffix_str': suffix_str,
             'suffix_univ': suffix_univ,
+            'response_score': response_score,
+            'response_category': response_category,
 
             # specific:
             'src': src,
