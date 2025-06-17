@@ -155,6 +155,8 @@ def _get_dominance_scores_full(
         '(X@W_VO)@attn': {'main_vecs': hs_dict['X_WVO'], 'ref_vecs': hs_dict['attn'], 'replace_Y_with_XWVO': True},
     }
     for dom_score_key in selected_dom_scores:
+        if dom_score_key not in dom_score_to_args:
+            raise ValueError(f"Unknown dominance score key: {dom_score_key}. Available keys: {list(dom_score_to_args.keys())}")
         hs_dict[dom_score_key] = get_dot_with_vectors(**dom_score_to_args[dom_score_key])
 
     if given_dir is not None:  # calculate direction-specific dominance scores
