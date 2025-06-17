@@ -101,18 +101,18 @@ def get_model_hidden_states(
     ## legacy names:
     hs_dict['resids_pre_attn'] = hs_dict['X_in']
     hs_dict['Y_all_norm'] = hs_dict['Y']
-    hs_dict['C_all_norm'] = hs_dict['X_WVO'].unsqueeze(2).repeat(1, 1, hs_dict_labels['X_WVO'].shape[2], 1, 1)  # repeat dst_pos --> layer, head, src_pos, dst_pos, d_model
+    hs_dict['C_all_norm'] = hs_dict['X_WVO'].unsqueeze(2).repeat(1, 1, hs_dict['X_WVO'].shape[2], 1, 1)  # repeat dst_pos --> layer, head, src_pos, dst_pos, d_model
     hs_dict['A'] = hs_dict['attn_pattern']  # layer, head, dst_pos, src_pos
 
     if apply_sanity_checks:
         print(
-            "decomp vs Y:", (hs_dict_labels['decompose_resid__attns'][5] - hs_dict_labels['Y'][5].sum(dim=(0,2))).abs().max(), "\n"
-            "decomp (w/ y) vs resid:", ((hs_dict_labels['decompose_resid__embed'] + hs_dict_labels['decompose_resid__mlps'].sum(dim=0) + hs_dict_labels['Y'].sum(dim=(0,1,3))) - hs_dict_labels['resid'][-1]).abs().max()
+            "decomp vs Y:", (hs_dict['decompose_resid__attns'][5] - hs_dict['Y'][5].sum(dim=(0,2))).abs().max(), "\n"
+            "decomp (w/ y) vs resid:", ((hs_dict['decompose_resid__embed'] + hs_dict['decompose_resid__mlps'].sum(dim=0) + hs_dict['Y'].sum(dim=(0,1,3))) - hs_dict['resid'][-1]).abs().max()
         )
     
     ## dominance score calculation:
     if add_dominance_calc:
-        _get_dominance_scores_full(
+        hs_dict = _get_dominance_scores_full(
             hs_dict,
             given_dir=given_dir,
             selected_dom_scores=selected_dom_scores,
@@ -125,8 +125,8 @@ def get_model_hidden_states(
 
 def _get_dominance_scores_full(
     hs_dict: Dict[str, torch.Tensor],
-    given_dir: Float[torch.Tensor, "n_layer d_model"] = None,  # direction to calculate dominance in
     selected_dom_scores=['Y@attn'], # list of keys to calculate dominance scores for
+    given_dir: Float[torch.Tensor, "n_layer d_model"] = None,  # direction to calculate dominance in
     dst_slc: slice = slice(None, None),  # dst slice for the attention (default to all)
 ):
     dst_slc = slice(None, None)
@@ -186,7 +186,9 @@ def get_dominance_scores(
     # calculate the hijacking score:
     if hs_dict is None:
         hs_dict, _ = get_model_hidden_states(
-            model, msg + suffix, selected_dom_scores=[dominance_metric],
+            model, msg + suffix,
+            add_dominance_calc=True,
+            selected_dom_scores=[dominance_metric]
         )
 
     src_slc_names = ['bos', 'chat_pre', 'instr', 'adv', 'chat[:-1]', 'chat[-1]']
