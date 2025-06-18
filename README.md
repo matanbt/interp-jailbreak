@@ -1,5 +1,5 @@
 # Universal Jailbreak Suffixes Are Strong Attention Hijackers 🥷
-The official repository for the paper [“Universal Jailbreak Suffixes Are Strong Attention Hijackers”](https://arxiv.org/abs/2506.12880).
+The official repository for the paper [“Universal Jailbreak Suffixes Are Strong Attention Hijackers”](https://arxiv.org/abs/2506.12880), analyzing the underlying mechanism of suffix-based LLM jailbreaks, and exploiting it to enhance and mitigate existing jailbreaks.
 
 <div align="center">
 <img width="650" src="docs/fig1.png">
