@@ -1,14 +1,9 @@
 import gc
-from time import sleep
 from typing import List, Tuple, Union, Dict
 from src.interp.utils import to_toks
-from src.models.model_factory import construct_model_base
 from transformer_lens import HookedTransformer
 import torch
-import plotly.graph_objects as go
-import plotly.express as px
 from jaxtyping import Float
-import pandas as pd
 from src.interp.utils import get_idx_slices
 
 

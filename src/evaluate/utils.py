@@ -8,6 +8,7 @@ import torch
 from tqdm import tqdm
 from jaxtyping import Float, Bool
 
+
 def load_data(
     model_name="google/gemma-2-2b-it",
 
@@ -19,9 +20,7 @@ def load_data(
     suffix_cats=None, # ['reg', 'init'],
     return_df_only=True,
 ):
-    ## load data:
-    # TODO load from HF:
-
+    ## load data (local):
     # if model_name == "google/gemma-2-2b-it":
     #     file_path = "data/gcg_eval/suffixed_msgs_w_resp_w_eval_prfl__gemma_gcg_affirm__raw_df.bz2"
     # elif model_name == "qwen/qwen2.5-1.5b-instruct":
@@ -45,8 +44,6 @@ def load_data(
     df = df[df.suffix_objective.isin(suffix_objectives)]
     if suffix_cats is not None:
         df = df[df.suffix_cat.isin(suffix_cats)]
-
-    # no training messages:  # TODO!
 
     if filter_to_non_trivial:
         # filter to messages that fail under `init+prefill` (non-trivial ones)
@@ -151,8 +148,6 @@ def get_logits_stats(logits: Float[torch.Tensor, "vocab_size"], model_base):
     refusal_probs = probs[model_base.refusal_toks].tolist()
     affirm_ranks = logits_ranks[model_base.affirm_toks].tolist()
     affirm_probs = probs[model_base.affirm_toks].tolist()
-
-    refusal_ranks, affirm_ranks, top5_tokens, top5_probs
      
     return dict(
         probs__top5_tokens=top5_tokens,
