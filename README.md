@@ -11,7 +11,7 @@ The project requires Python `3.1.0` and the installation of `requirements.txt`, 
 
 ## Usage
 
-Useful entry points are demonstrated in the [demo notebook](./demo.ipynb). There, we reproduce the extensive GCG universality analysis (§3), calculation of the *dominance score* (Eq. 3, §5) over different prompts, which can be aggregated per GCG suffixes, leading to their *hijacking strength* (§6).
+Common entry points are demonstrated in the [demo notebook](./demo.ipynb). There, we reproduce the extensive GCG universality analysis (§3), calculation of the *dominance score* (Eq. 3, §5) over different prompts, which can be aggregated per GCG suffixes, leading to their *hijacking strength* (§6).
 
 ## Additional Usage
 Coming soon...
@@ -29,8 +29,8 @@ Coming soon...
 ## Usage (Mitigate GCG)
 Coming soon... -->
 
-## Research Artifacts
-Some of our research artifacts (which are used in this code) may be useful for further/other types of analyses.
+## Additional Research Artifacts
+Some of our additional research artifacts (which are used in this code) may be useful for further/other types of analyses.
 - **The GCG suffixes dataset** for further exploring GCG suffixes.
     - GCG suffixes crafted on Gemma-2, Qwen-2.5 and Llama-3.1, their generated response when appended to harmful instructions (from AdvBench, StrongReject's custom), their evaluation and charecterization.
     - In HuggingFace: https://huggingface.co/datasets/MatanBT/gcg-evaluated-data
