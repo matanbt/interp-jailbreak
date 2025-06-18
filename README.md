@@ -11,7 +11,7 @@ The project requires Python `3.1.0` and the installation of `requirements.txt`, 
 
 ## Usage
 
-Common entry points are demonstrated in the [demo notebook](./demo.ipynb). There, we reproduce the extensive GCG universality analysis (§3), calculation of the *dominance score* (Eq. 3, §5) over different prompts, which can be aggregated per GCG suffixes, leading to their *hijacking strength* (§6).
+Common entry points are demonstrated in the [demo notebook](./demo.ipynb). There, we reproduce the initial GCG universality analysis (§3), calculation of the *dominance score* (Eq. 3, §5) over different prompts, which can be aggregated per GCG suffix, leading to their *hijacking strength* (§6).
 
 ## Additional Usage
 Coming soon...
