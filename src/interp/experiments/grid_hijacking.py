@@ -61,7 +61,7 @@ def grid_hijacking(
     for message_id, suffix_id in tproduct(message_ids, suffix_ids):
         row = data_df[(data_df.message_id == message_id) & (data_df.suffix_id == suffix_id)].iloc[0]
         message_str = row.message_str
-        suffix_str, suffix_univ, suffix_id = row.suffix_str, row.univ_score, row.suffix_id
+        suffix_str, suffix_univ, suffix_id, suffix_category = row.suffix_str, row.univ_score, row.suffix_id, row.suffix_category
         response_score, response_category = row.strongreject_finetuned, row.response_category
 
         ## Get hidden states and dominance scores' tensors:
@@ -95,6 +95,7 @@ def grid_hijacking(
                     # prompt:
                     'message_id': message_id,
                     'suffix_id': suffix_id,
+                    'suffix_category': suffix_category,
                     'suffix_univ': suffix_univ,
                     'response_score': response_score,
                     'response_category': response_category,
