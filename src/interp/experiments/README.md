@@ -1,3 +1,3 @@
-# Reproduction of interpretability experiments
+# Reproduction of interpretability[-related] experiments
 
-Coming soon.
+- `grid_hijacking.py` reproduces the comparison between hijacking strength and universality (Sec. 5).
