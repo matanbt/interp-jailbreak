@@ -2,10 +2,8 @@
 import random
 from huggingface_hub import hf_hub_download
 import pandas as pd
-from typing import List
 import pandas as pd
 import torch
-from tqdm import tqdm
 from jaxtyping import Float, Bool
 
 
@@ -60,6 +58,13 @@ def load_data(
     
     ## fetch target affirms:
     targets = pd.read_csv("data/harmful_behaviors.csv").target_response_prefix.tolist()
+
+    ## set period in the end of message, if not exists:
+    def set_period_if_not_exists(x):
+        if not x.endswith('. '):
+            return x + '. '
+        return x
+    df['message_str'] = df.message_str.apply(set_period_if_not_exists)
 
     ## calc the set of hard messages:
     univ_per_msg = df[df.suffix_id.isin(top_suffix_ids[:1])].groupby('message_id').agg({'strongreject_finetuned': 'max'}).sort_values('strongreject_finetuned', ascending=False)
