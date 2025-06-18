@@ -44,7 +44,7 @@ Some code snippets are loosely inspired by the following codebases:
 - [GraySwanAI/nanoGCG](https://github.com/GraySwanAI/nanoGCG/tree/main])
 - [andyrdt/refusal_direction](https://github.com/andyrdt/refusal_direction)
 
-## Cite
+## Citation
 If you find this work, or any of the research artifacts, useful, please cite our paper as:
 ```
 @article{bentov2025universaljailbreaksuffixesstrong,
