@@ -11,7 +11,7 @@ def get_model_hidden_states(
     model: HookedTransformer,
     toks: Union[List[int], str],
     return_labels: bool = False,
-    force_output_prefix=None,
+    force_output_prefix: str = None,
     apply_sanity_checks: bool = False,
 
     # dominance score calculation:
@@ -39,9 +39,8 @@ def get_model_hidden_states(
         'decompose_resid': 'decompose_resid',
         
         ## attention:
-        'attn': 'blocks.{layer}.hook_attn_out',
-        'attn_result': 'blocks.{layer}.attn.hook_result',  # # layer, head, seq_len, hidden_size
-        'attn_pattern': 'blocks.{layer}.attn.hook_pattern',  # layer, head, seq_len (dst), seq_len (src)
+        'attn': 'blocks.{layer}.hook_attn_out',  # layer, seq_len, hidden_size
+       'attn_pattern': 'blocks.{layer}.attn.hook_pattern',  # layer, head, seq_len (dst), seq_len (src)
 
         ## mlp:
         'mlp': 'blocks.{layer}.hook_mlp_out',
@@ -91,12 +90,10 @@ def get_model_hidden_states(
         decomp_resid_coar[layer] += hs_dict['decompose_resid__mlps'][layer]
         decomp_resid_coar[layer] += hs_dict['decompose_resid__attns'][layer]
     hs_dict['decompose_resid_coar'] = decomp_resid_coar
-    hs_dict['decompose_resid_coar'] = [f"decomp_resid_coar l{layer}" for layer in range(n_layers)]
     
     ## legacy names:
     hs_dict['resids_pre_attn'] = hs_dict['X_in']
-    hs_dict['Y_all_norm'] = hs_dict['Y']
-    hs_dict['C_all_norm'] = hs_dict['X_WVO'].unsqueeze(2).repeat(1, 1, hs_dict['X_WVO'].shape[2], 1, 1)  # repeat dst_pos --> layer, head, src_pos, dst_pos, d_model
+    hs_dict['X_WVO'] = hs_dict['X_WVO'].unsqueeze(2)
     hs_dict['A'] = hs_dict['attn_pattern']  # layer, head, dst_pos, src_pos
 
     if apply_sanity_checks:
@@ -107,7 +104,7 @@ def get_model_hidden_states(
     
     ## dominance score calculation:
     if add_dominance_calc:
-        hs_dict = _get_dominance_scores_full(
+        hs_dict = _calculate_hooks_for_dom_scores(
             hs_dict,
             given_dir=given_dir,
             selected_dom_scores=selected_dom_scores,
@@ -118,7 +115,7 @@ def get_model_hidden_states(
     return hs_dict, cache
 
 
-def _get_dominance_scores_full(
+def _calculate_hooks_for_dom_scores(
     hs_dict: Dict[str, torch.Tensor],
     selected_dom_scores=['Y@attn'], # list of keys to calculate dominance scores for
     given_dir: Float[torch.Tensor, "n_layer d_model"] = None,  # direction to calculate dominance in
@@ -139,27 +136,28 @@ def _get_dominance_scores_full(
         # normalize per layer and (dst) token position
         dot_prod_vals = dot_prod_vals / torch.norm(ref_vecs, dim=-1).pow(2)  # layer, head, dst, src
 
-        return dot_prod_vals
+        return dot_prod_vals.cpu()
 
     dom_score_to_args = {
-        # TODO verify the following two:
-        # 'Y@resid': {'out_vecs': hs_dict['resids_pre_attn']},  
-        # 'Y@dcmp_resid': {'out_vecs': hs_dict['decompose_resid_coar']},
-
-        'Y@attn': {'main_vecs': hs_dict['Y'], 'ref_vecs': hs_dict['attn']},
-        '(X@W_VO)@attn': {'main_vecs': hs_dict['X_WVO'], 'ref_vecs': hs_dict['attn'], 'replace_Y_with_XWVO': True},
+        'Y@resid': (hs_dict['Y'], hs_dict['resid']),
+        'Y@dcmp_resid': (hs_dict['Y'], hs_dict['decompose_resid_coar']),
+        'Y@attn': (hs_dict['Y'], hs_dict['attn']),
+        '(X@W_VO)@attn': (hs_dict['X_WVO'], hs_dict['attn'])
     }
-    for dom_score_key in selected_dom_scores:
-        if dom_score_key not in dom_score_to_args:
-            raise ValueError(f"Unknown dominance score key: {dom_score_key}. Available keys: {list(dom_score_to_args.keys())}")
-        hs_dict[dom_score_key] = get_dot_with_vectors(**dom_score_to_args[dom_score_key])
+    for dom_score_key in set(selected_dom_scores) & set(dom_score_to_args.keys()):
+        hs_dict[dom_score_key] = get_dot_with_vectors(*dom_score_to_args[dom_score_key])
 
-    if given_dir is not None:  # calculate direction-specific dominance scores
+    if given_dir is not None and 'Y@dir' in selected_dom_scores:
+        # calculate direction-specific dominance scores
         hs_dict[f"Y@dir"] = torch.einsum(
             '...d, d -> ...' if len(given_dir.shape) == 1 else 'lhtsd, ld -> lhts',
             hs_dict['Y'][:, :, dst_slc],
             (given_dir / torch.norm(given_dir, dim=-1, keepdim=True)).to(hs_dict['Y'])
-        )
+        ).cpu()
+    
+    ## norm-based scores:
+    hs_dict['norm(X)'] = hs_dict['X_in'].unsqueeze(2).norm(dim=-1).cpu()  # layer, head, [1], src
+    hs_dict['norm(Y)'] = hs_dict['Y'].norm(dim=-1).cpu()  # layer, head, dst, src
 
     return hs_dict
 
@@ -169,13 +167,33 @@ def get_dominance_scores(
     msg: str, suffix: str,
     hs_dict: Dict[str, torch.Tensor] = None,
     dst_slc_name: str = 'chat[-1]',
+    src_slc_names: Tuple[str] = ('bos', 'chat_pre', 'instr', 'adv', 'chat[:-1]', 'chat[-1]'),
     dominance_metric: str ='Y@attn', 
-    dominance_metric_flavor: str = 'sum',  # 'sum', 'sum-top0.1'
-) -> Float[torch.Tensor, "n_layer"]:
+    dominance_metric_flavor: str = 'sum',  # 'sum', 'sum-top_q'
+    dominance_metric_flavor_q: float = 0.1,  # used only for 'sum-top0.1' flavor
+    aggr_all_layers: bool = False,
+) -> Dict[str, List[float]]:
     """
     Self-contained function to calculate dominance scores for a given message and suffix.
+    Args:
+        model: the HookedTransformer model to use.
+        msg: the message string to use.
+        suffix: the suffix string to use.
+        hs_dict: pre-computed hidden states dictionary, if None, will be computed.
+        dst_slc_name: the name of the destination slice to use (e.g. 'chat[-1]').
+        src_slc_names: a tuple of source slice names to calculate dominance scores for (e.g. `('instr', 'adv')`).
+        dominance_metric: the metric to use for dominance calculation (e.g. 'Y@attn').
+        dominance_metric_flavor: the flavor of the metric to use (e.g. 'sum', 'sum-top_q').
+        dominance_metric_flavor_q: the quantile to use for 'sum-top_q' flavor.
+        aggr_all_layers: if True, will aggregate the scores across all layers, otherwise returns scores per layer.
+    Return: a dict, each entry maps the source slice name (e.g. 'instr', 'adv') to a dominance score list of length n_layers (or a singleton list if `aggr_all_layers`).
     """
 
+    # varify supported inputs:
+    assert dominance_metric in ['Y@attn', 'Y@resid', 'Y@dcmp_resid', '(X@W_VO)@attn', 'norm(X)', 'norm(Y)', 'Y@dir', 'A']
+    assert dominance_metric_flavor in ['sum', 'sum-top_q']
+
+    # get prompt slices:
     slcs = get_idx_slices(
         model, msg, suffix
     )
@@ -188,21 +206,41 @@ def get_dominance_scores(
             selected_dom_scores=[dominance_metric]
         )
 
-    src_slc_names = ['bos', 'chat_pre', 'instr', 'adv', 'chat[:-1]', 'chat[-1]']
-
     dominance_score_dict = {}
     for src_slc_name in src_slc_names:
+        
+        ## skip empty slices:
+        if slcs[src_slc_name].stop - slcs[src_slc_name].start <= 0:
+            print(f"WARNING: Skipping empty slice {src_slc_name} with slice {slcs[src_slc_name]}")
+            continue
+
+        ## set to the current slices:
+        assert hs_dict[dominance_metric].ndim == 4, f"Expects a 4D tensor of shape (n_layer, head, dst, src), got {hs_dict[dominance_metric].shape} for metric {dominance_metric}"
+
+        dst_slc = slcs[dst_slc_name] if hs_dict[dominance_metric].shape[-2] > 1 else slice(None, None)  # if dst is not a single token, use the full slice
+        src_slc = slcs[src_slc_name] if hs_dict[dominance_metric].shape[-1] > 1 else slice(None, None)  # if src is not a single token, use the full slice
+
         dominance_score_dict[src_slc_name] = (
             hs_dict[dominance_metric]  # layer, head, dst, src
-                .sum(dim=1)[:, slcs[dst_slc_name], slcs[src_slc_name]]
-        )  # n_layer, dst, src
+                [:, :, dst_slc, src_slc]
+        )  # n_layer, head, chosen_dst, chosen_src
 
-        if dominance_metric_flavor == 'sum-top0.1':
-            raise NotImplementedError("`sum-top0.1` flavor is not implemented yet.")
-        elif dominance_metric_flavor == 'sum':
-            dominance_score_dict[src_slc_name] = dominance_score_dict[src_slc_name].sum(dim=(1, 2))  # n_layer, dst, src -> n_layer
+        if dominance_metric_flavor == 'sum':
+            dominance_metric_flavor_q = 1.0  # generalize to 'sum-top_q' flavor
+        assert 0 < dominance_metric_flavor_q <= 1, "dominance_metric_flavor_param should be in (0, 1)"
+        
+        # whether to skip layer dim on flattening layers
+        dim_to_start_reduce = 1 if not aggr_all_layers else 0   
+        flatten_vecs = dominance_score_dict[src_slc_name].flatten(start_dim=dim_to_start_reduce)  # layer, head*c_dst*c_src OR layer*head*c_dst*c_src
+
+        ## pick the top-q% values and sum them
+        k = max(1, int(dominance_metric_flavor_q * flatten_vecs.shape[-1]))
+        dominance_score_dict[src_slc_name] = flatten_vecs.topk(
+            k=k, dim=-1, largest=True, sorted=False
+            ).values.sum(dim=-1)  # n_layer, head*c_dst*c_src -> n_layer OR n_layer*head*c_dst*c_src->scalar
+        dominance_score_dict[src_slc_name] = dominance_score_dict[src_slc_name].tolist() 
+
+        if aggr_all_layers:  # make sure we return a singleton list
+            dominance_score_dict[src_slc_name] = [dominance_score_dict[src_slc_name]]
 
     return dominance_score_dict
-
-
-# TODO another function to support attn@resid + mlp@resid + embed@resid
