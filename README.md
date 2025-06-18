@@ -2,7 +2,7 @@
 The official repository for the paper [“Universal Jailbreak Suffixes Are Strong Attention Hijackers”](https://arxiv.org/abs/2506.12880).
 
 <div align="center">
-<img width="600" src="docs/fig1.png">
+<img width="650" src="docs/fig1.png">
 </div>
 
 
